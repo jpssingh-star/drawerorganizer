@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawer Organizer Designer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/STLExporter.js"></script>
+    <link rel="stylesheet" href="drawer-organizer.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Drawer Organizer</h1>
+            <p class="subtitle">Design custom 3D printable compartments</p>
+        </header>
+
+        <div id="tutorial" class="tutorial">
+            <button class="close-tutorial" onclick="closeTutorial()">×</button>
+            <div class="tutorial-title">Quick Start</div>
+            <ul class="tutorial-steps">
+                <li>Set your drawer dimensions</li>
+                <li>Click grid to add compartments</li>
+                <li>Drag to move, drag handle to resize</li>
+                <li>Click × to delete compartments</li>
+                <li>Export STL when ready</li>
+            </ul>
+        </div>
+
+        <div class="main-grid">
+            <div class="panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                    <h2 class="panel-title" style="margin-bottom: 0;">3D Preview</h2>
+                    <button class="btn btn-secondary" style="padding: 8px 16px; font-size: 11px;" onclick="toggleView()">
+                        <span id="view-label">Top View</span>
+                    </button>
+                </div>
+                <div id="canvas-container"></div>
+            </div>
+
+            <div class="panel">
+                <h2 class="panel-title">Dimensions</h2>
+                <div class="control-group">
+                    <label class="control-label">Drawer Size (mm)</label>
+                    <div class="input-row">
+                        <div class="input-wrapper">
+                            <span class="input-label">width</span>
+                            <input type="number" id="drawer-width" value="300" min="50" max="1000" step="10">
+                        </div>
+                        <div class="input-wrapper">
+                            <span class="input-label">depth</span>
+                            <input type="number" id="drawer-depth" value="200" min="50" max="1000" step="10">
+                        </div>
+                        <div class="input-wrapper">
+                            <span class="input-label">height</span>
+                            <input type="number" id="drawer-height" value="50" min="10" max="200" step="5">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label class="control-label">Wall Thickness (mm)</label>
+                    <input type="number" id="wall-thickness" value="2" min="1" max="5" step="0.5" style="width: 100%;">
+                </div>
+
+                <div class="stats">
+                    <div class="stat-row">
+                        <span class="stat-label">Compartments</span>
+                        <span class="stat-value" id="compartment-count">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Print Volume</span>
+                        <span class="stat-value" id="print-volume">0 cm³</span>
+                    </div>
+                </div>
+
+                <h2 class="panel-title" style="margin-top: 24px;">Layout Grid</h2>
+                <p class="subtitle" style="margin-bottom: 12px; color: #666;">Click to add compartments</p>
+                <div id="grid-canvas" class="grid-canvas"></div>
+
+                <div class="button-group" style="margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="exportSTL()">
+                        Export STL
+                    </button>
+                    <button class="btn btn-secondary" onclick="clearCompartments()">
+                        Clear All
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="loading" id="loading">
+        <div>Generating STL</div>
+    </div>
+
+    <script>
+        // State management
+        const state = {
+            drawerWidth: 300,
+            drawerDepth: 200,
+            drawerHeight: 50,
+            wallThickness: 2,
+            compartments: [],
+            selectedCompartment: null,
+            dragging: null,
+            resizing: null,
+            currentView: 'perspective', // 'perspective' or 'top'
+            colorPalette: ['#6b9080', '#a4ac86', '#c87941', '#4a6670', '#3d5a80', '#293241']
+        };
+
+        // Three.js setup
+        let scene, camera, renderer, controls;
+        let organizerMesh;
+
+        function toggleView() {
+            if (state.currentView === 'perspective') {
+                // Switch to top view
+                state.currentView = 'top';
+                camera.position.set(0, 600, 0);
+                camera.lookAt(0, 0, 0);
+                controls.enabled = false;
+                document.getElementById('view-label').textContent = 'Perspective';
+            } else {
+                // Switch to perspective view
+                state.currentView = 'perspective';
+                camera.position.set(400, 300, 400);
+                camera.lookAt(0, 0, 0);
+                controls.enabled = true;
+                document.getElementById('view-label').textContent = 'Top View';
+            }
+        }
+
+        function initThreeJS() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            
+            camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 2000);
+            camera.position.set(400, 300, 400);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+            
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.7);
+            directionalLight.position.set(200, 300, 200);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.2);
+            directionalLight2.position.set(-200, 200, -200);
+            scene.add(directionalLight2);
+            
+            // Grid helper
+            const gridHelper = new THREE.GridHelper(800, 40, 0x333333, 0x333333);
+            gridHelper.material.opacity = 0.3;
+            gridHelper.material.transparent = true;
+            scene.add(gridHelper);
+            
+            animate();
+            
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function updateThreeJSModel() {
+            if (organizerMesh) {
+                scene.remove(organizerMesh);
+            }
+            
+            organizerMesh = new THREE.Group();
+            
+            const w = state.drawerWidth;
+            const d = state.drawerDepth;
+            const h = state.drawerHeight;
+            const t = state.wallThickness;
+            
+            // Material for solid parts (outer drawer)
+            const solidMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xffffff,
+                shininess: 20,
+                side: THREE.DoubleSide
+            });
+            
+            // Create outer drawer box (solid)
+            // Bottom
+            const bottomGeo = new THREE.BoxBufferGeometry(w, t, d);
+            const bottom = new THREE.Mesh(bottomGeo, solidMaterial);
+            bottom.position.set(0, t/2, 0);
+            bottom.castShadow = true;
+            bottom.receiveShadow = true;
+            organizerMesh.add(bottom);
+            
+            // Front wall
+            const frontGeo = new THREE.BoxBufferGeometry(w, h, t);
+            const front = new THREE.Mesh(frontGeo, solidMaterial);
+            front.position.set(0, h/2, -d/2 + t/2);
+            front.castShadow = true;
+            front.receiveShadow = true;
+            organizerMesh.add(front);
+            
+            // Back wall
+            const backGeo = new THREE.BoxBufferGeometry(w, h, t);
+            const back = new THREE.Mesh(backGeo, solidMaterial);
+            back.position.set(0, h/2, d/2 - t/2);
+            back.castShadow = true;
+            back.receiveShadow = true;
+            organizerMesh.add(back);
+            
+            // Left wall
+            const leftGeo = new THREE.BoxBufferGeometry(t, h, d);
+            const left = new THREE.Mesh(leftGeo, solidMaterial);
+            left.position.set(-w/2 + t/2, h/2, 0);
+            left.castShadow = true;
+            left.receiveShadow = true;
+            organizerMesh.add(left);
+            
+            // Right wall
+            const rightGeo = new THREE.BoxBufferGeometry(t, h, d);
+            const right = new THREE.Mesh(rightGeo, solidMaterial);
+            right.position.set(w/2 - t/2, h/2, 0);
+            right.castShadow = true;
+            right.receiveShadow = true;
+            organizerMesh.add(right);
+            
+            // Create compartments (open top boxes)
+            state.compartments.forEach((comp, index) => {
+                const cx = (comp.x / 100) * w - w/2;
+                const cy = (comp.y / 100) * d - d/2;
+                const cw = (comp.width / 100) * w;
+                const cd = (comp.depth / 100) * d;
+                const ch = h - t; // Compartment height (minus bottom)
+                
+                // Get color from palette
+                const hexColor = state.colorPalette[comp.colorIndex];
+                const color = new THREE.Color(hexColor);
+                
+                // Material for this compartment
+                const compMaterial = new THREE.MeshPhongMaterial({ 
+                    color: color,
+                    shininess: 10,
+                    side: THREE.DoubleSide
+                });
+                
+                // Front wall of compartment
+                const cFrontGeo = new THREE.BoxBufferGeometry(cw, ch, t);
+                const cFront = new THREE.Mesh(cFrontGeo, compMaterial);
+                cFront.position.set(cx + cw/2, ch/2 + t, cy + t/2);
+                cFront.castShadow = true;
+                cFront.receiveShadow = true;
+                organizerMesh.add(cFront);
+                
+                // Back wall of compartment
+                const cBackGeo = new THREE.BoxBufferGeometry(cw, ch, t);
+                const cBack = new THREE.Mesh(cBackGeo, compMaterial);
+                cBack.position.set(cx + cw/2, ch/2 + t, cy + cd - t/2);
+                cBack.castShadow = true;
+                cBack.receiveShadow = true;
+                organizerMesh.add(cBack);
+                
+                // Left wall of compartment
+                const cLeftGeo = new THREE.BoxBufferGeometry(t, ch, cd);
+                const cLeft = new THREE.Mesh(cLeftGeo, compMaterial);
+                cLeft.position.set(cx + t/2, ch/2 + t, cy + cd/2);
+                cLeft.castShadow = true;
+                cLeft.receiveShadow = true;
+                organizerMesh.add(cLeft);
+                
+                // Right wall of compartment
+                const cRightGeo = new THREE.BoxBufferGeometry(t, ch, cd);
+                const cRight = new THREE.Mesh(cRightGeo, compMaterial);
+                cRight.position.set(cx + cw - t/2, ch/2 + t, cy + cd/2);
+                cRight.castShadow = true;
+                cRight.receiveShadow = true;
+                organizerMesh.add(cRight);
+            });
+            
+            // Add black edge lines to everything for that clean look
+            organizerMesh.children.forEach(mesh => {
+                const edges = new THREE.EdgesGeometry(mesh.geometry);
+                const lineMaterial = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 1 });
+                const edgeLines = new THREE.LineSegments(edges, lineMaterial);
+                mesh.add(edgeLines);
+            });
+            
+            scene.add(organizerMesh);
+            
+            // Center the model
+            const box = new THREE.Box3().setFromObject(organizerMesh);
+            const center = box.getCenter(new THREE.Vector3());
+            organizerMesh.position.sub(center);
+            organizerMesh.position.y += h / 2;
+        }
+
+        function createOrganizerGeometry() {
+            const w = state.drawerWidth;
+            const d = state.drawerDepth;
+            const h = state.drawerHeight;
+            const t = state.wallThickness;
+            
+            const geometries = [];
+            
+            // Bottom
+            const bottomGeo = new THREE.BoxBufferGeometry(w, t, d);
+            const bottomMatrix = new THREE.Matrix4().makeTranslation(0, t/2, 0);
+            bottomGeo.applyMatrix4(bottomMatrix);
+            geometries.push(bottomGeo);
+            
+            // Outer walls
+            // Front wall
+            const frontGeo = new THREE.BoxBufferGeometry(w, h, t);
+            const frontMatrix = new THREE.Matrix4().makeTranslation(0, h/2, -d/2 + t/2);
+            frontGeo.applyMatrix4(frontMatrix);
+            geometries.push(frontGeo);
+            
+            // Back wall
+            const backGeo = new THREE.BoxBufferGeometry(w, h, t);
+            const backMatrix = new THREE.Matrix4().makeTranslation(0, h/2, d/2 - t/2);
+            backGeo.applyMatrix4(backMatrix);
+            geometries.push(backGeo);
+            
+            // Left wall
+            const leftGeo = new THREE.BoxBufferGeometry(t, h, d);
+            const leftMatrix = new THREE.Matrix4().makeTranslation(-w/2 + t/2, h/2, 0);
+            leftGeo.applyMatrix4(leftMatrix);
+            geometries.push(leftGeo);
+            
+            // Right wall
+            const rightGeo = new THREE.BoxBufferGeometry(t, h, d);
+            const rightMatrix = new THREE.Matrix4().makeTranslation(w/2 - t/2, h/2, 0);
+            rightGeo.applyMatrix4(rightMatrix);
+            geometries.push(rightGeo);
+            
+            // Compartment walls
+            state.compartments.forEach(comp => {
+                const cx = (comp.x / 100) * w - w/2;
+                const cy = (comp.y / 100) * d - d/2;
+                const cw = (comp.width / 100) * w;
+                const cd = (comp.depth / 100) * d;
+                
+                // Front wall of compartment
+                const cFrontGeo = new THREE.BoxBufferGeometry(cw, h - t, t);
+                const cFrontMatrix = new THREE.Matrix4().makeTranslation(cx + cw/2, (h - t)/2 + t, cy + t/2);
+                cFrontGeo.applyMatrix4(cFrontMatrix);
+                geometries.push(cFrontGeo);
+                
+                // Back wall of compartment
+                const cBackGeo = new THREE.BoxBufferGeometry(cw, h - t, t);
+                const cBackMatrix = new THREE.Matrix4().makeTranslation(cx + cw/2, (h - t)/2 + t, cy + cd - t/2);
+                cBackGeo.applyMatrix4(cBackMatrix);
+                geometries.push(cBackGeo);
+                
+                // Left wall of compartment
+                const cLeftGeo = new THREE.BoxBufferGeometry(t, h - t, cd);
+                const cLeftMatrix = new THREE.Matrix4().makeTranslation(cx + t/2, (h - t)/2 + t, cy + cd/2);
+                cLeftGeo.applyMatrix4(cLeftMatrix);
+                geometries.push(cLeftGeo);
+                
+                // Right wall of compartment
+                const cRightGeo = new THREE.BoxBufferGeometry(t, h - t, cd);
+                const cRightMatrix = new THREE.Matrix4().makeTranslation(cx + cw - t/2, (h - t)/2 + t, cy + cd/2);
+                cRightGeo.applyMatrix4(cRightMatrix);
+                geometries.push(cRightGeo);
+            });
+            
+            // Merge all geometries using BufferGeometryUtils if available, otherwise manually
+            if (THREE.BufferGeometryUtils) {
+                return THREE.BufferGeometryUtils.mergeBufferGeometries(geometries);
+            } else {
+                // Manual merge fallback
+                return geometries[0];
+            }
+        }
+
+        // Grid canvas setup
+        const gridCanvas = document.getElementById('grid-canvas');
+        let gridScale = 1;
+
+        function drawGrid() {
+            gridCanvas.innerHTML = '';
+            
+            // Draw compartments
+            state.compartments.forEach((comp, index) => {
+                const div = document.createElement('div');
+                div.className = 'compartment';
+                if (state.selectedCompartment === index) {
+                    div.classList.add('selected');
+                }
+                div.style.left = comp.x + '%';
+                div.style.top = comp.y + '%';
+                div.style.width = comp.width + '%';
+                div.style.height = comp.depth + '%';
+                
+                // Apply color from palette
+                const color = state.colorPalette[comp.colorIndex];
+                div.style.backgroundColor = color + '33'; // 33 = 20% opacity
+                div.style.borderColor = color;
+                
+                // Delete button
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'delete-btn';
+                deleteBtn.innerHTML = '×';
+                deleteBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteCompartment(index);
+                };
+                div.appendChild(deleteBtn);
+                
+                // Resize handle
+                const handle = document.createElement('div');
+                handle.className = 'resize-handle se';
+                handle.style.backgroundColor = color;
+                div.appendChild(handle);
+                
+                div.onmousedown = (e) => startDrag(e, index);
+                handle.onmousedown = (e) => {
+                    e.stopPropagation();
+                    startResize(e, index);
+                };
+                
+                gridCanvas.appendChild(div);
+            });
+            
+            updateStats();
+        }
+
+        function gridToMM(percent, dimension) {
+            return (percent / 100) * dimension;
+        }
+
+        function mmToGrid(mm, dimension) {
+            return (mm / dimension) * 100;
+        }
+
+        gridCanvas.onclick = (e) => {
+            if (state.dragging || state.resizing) return;
+            
+            const rect = gridCanvas.getBoundingClientRect();
+            const x = ((e.clientX - rect.left) / rect.width) * 100;
+            const y = ((e.clientY - rect.top) / rect.height) * 100;
+            
+            const defaultSize = 15; // 15% of drawer size
+            
+            // Snap to grid
+            const snappedX = Math.round(x / 5) * 5;
+            const snappedY = Math.round(y / 5) * 5;
+            
+            // Assign color based on current compartment count
+            const colorIndex = state.compartments.length % state.colorPalette.length;
+            
+            state.compartments.push({
+                x: Math.max(0, Math.min(85, snappedX)),
+                y: Math.max(0, Math.min(85, snappedY)),
+                width: defaultSize,
+                depth: defaultSize,
+                colorIndex: colorIndex
+            });
+            
+            drawGrid();
+            updateThreeJSModel();
+        };
+
+        function startDrag(e, index) {
+            e.preventDefault();
+            state.selectedCompartment = index;
+            state.dragging = {
+                index,
+                startX: e.clientX,
+                startY: e.clientY,
+                initialX: state.compartments[index].x,
+                initialY: state.compartments[index].y
+            };
+            drawGrid();
+        }
+
+        function startResize(e, index) {
+            e.preventDefault();
+            state.resizing = {
+                index,
+                startX: e.clientX,
+                startY: e.clientY,
+                initialWidth: state.compartments[index].width,
+                initialDepth: state.compartments[index].depth
+            };
+        }
+
+        document.addEventListener('mousemove', (e) => {
+            if (state.dragging) {
+                const rect = gridCanvas.getBoundingClientRect();
+                const deltaX = ((e.clientX - state.dragging.startX) / rect.width) * 100;
+                const deltaY = ((e.clientY - state.dragging.startY) / rect.height) * 100;
+                
+                const comp = state.compartments[state.dragging.index];
+                comp.x = Math.max(0, Math.min(100 - comp.width, state.dragging.initialX + deltaX));
+                comp.y = Math.max(0, Math.min(100 - comp.depth, state.dragging.initialY + deltaY));
+                
+                // Snap to grid
+                comp.x = Math.round(comp.x / 5) * 5;
+                comp.y = Math.round(comp.y / 5) * 5;
+                
+                drawGrid();
+                updateThreeJSModel();
+            }
+            
+            if (state.resizing) {
+                const rect = gridCanvas.getBoundingClientRect();
+                const deltaX = ((e.clientX - state.resizing.startX) / rect.width) * 100;
+                const deltaY = ((e.clientY - state.resizing.startY) / rect.height) * 100;
+                
+                const comp = state.compartments[state.resizing.index];
+                comp.width = Math.max(5, Math.min(100 - comp.x, state.resizing.initialWidth + deltaX));
+                comp.depth = Math.max(5, Math.min(100 - comp.y, state.resizing.initialDepth + deltaY));
+                
+                // Snap to grid
+                comp.width = Math.round(comp.width / 5) * 5;
+                comp.depth = Math.round(comp.depth / 5) * 5;
+                
+                drawGrid();
+                updateThreeJSModel();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            state.dragging = null;
+            state.resizing = null;
+        });
+
+        function deleteCompartment(index) {
+            state.compartments.splice(index, 1);
+            state.selectedCompartment = null;
+            drawGrid();
+            updateThreeJSModel();
+        }
+
+        function clearCompartments() {
+            if (state.compartments.length === 0) return;
+            if (confirm('Clear all compartments?')) {
+                state.compartments = [];
+                state.selectedCompartment = null;
+                drawGrid();
+                updateThreeJSModel();
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('compartment-count').textContent = state.compartments.length;
+            
+            // Calculate approximate volume
+            const w = state.drawerWidth;
+            const d = state.drawerDepth;
+            const h = state.drawerHeight;
+            const t = state.wallThickness;
+            
+            let volume = w * d * t; // Base
+            volume += 2 * t * d * h; // Side walls
+            volume += 2 * w * t * h; // Front/back walls
+            
+            // Add compartment walls
+            state.compartments.forEach(comp => {
+                const cw = (comp.width / 100) * w;
+                const cd = (comp.depth / 100) * d;
+                volume += 2 * (cw * t * h + cd * t * h);
+            });
+            
+            document.getElementById('print-volume').textContent = (volume / 1000).toFixed(1) + ' cm³';
+        }
+
+        function exportSTL() {
+            if (state.compartments.length === 0) {
+                alert('Please add at least one compartment before exporting.');
+                return;
+            }
+            
+            document.getElementById('loading').classList.add('active');
+            
+            setTimeout(() => {
+                try {
+                    console.log('Exporting organizerMesh:', organizerMesh);
+                    console.log('Number of children:', organizerMesh.children.length);
+                    
+                    // Collect all geometries from the group
+                    const geometries = [];
+                    
+                    organizerMesh.children.forEach((child, idx) => {
+                        console.log(`Child ${idx}:`, child.type, child.isMesh, child.geometry);
+                        
+                        if (child.isMesh && child.geometry) {
+                            // Skip the edge lines (LineSegments children)
+                            if (child.children.length > 0 && child.children[0].type === 'LineSegments') {
+                                console.log('Skipping edge lines for child', idx);
+                            }
+                            
+                            // Clone geometry and apply the mesh's local transformation
+                            const clonedGeo = child.geometry.clone();
+                            const matrix = new THREE.Matrix4();
+                            matrix.compose(child.position, child.quaternion, child.scale);
+                            clonedGeo.applyMatrix4(matrix);
+                            geometries.push(clonedGeo);
+                        }
+                    });
+                    
+                    console.log('Geometries collected:', geometries.length);
+                    
+                    if (geometries.length === 0) {
+                        alert('No geometry to export. Try adding compartments first.');
+                        document.getElementById('loading').classList.remove('active');
+                        return;
+                    }
+                    
+                    // Merge all geometries into one
+                    const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries);
+                    console.log('Merged geometry vertices:', mergedGeometry.attributes.position.count);
+                    
+                    // Apply the group's position offset
+                    const groupMatrix = new THREE.Matrix4();
+                    groupMatrix.makeTranslation(
+                        organizerMesh.position.x,
+                        organizerMesh.position.y,
+                        organizerMesh.position.z
+                    );
+                    mergedGeometry.applyMatrix4(groupMatrix);
+                    
+                    // Create a temporary mesh for export
+                    const tempMesh = new THREE.Mesh(mergedGeometry);
+                    
+                    // Export to STL
+                    const exporter = new THREE.STLExporter();
+                    const stlString = exporter.parse(tempMesh);
+                    
+                    console.log('STL string length:', stlString.length);
+                    
+                    // Download the file
+                    const blob = new Blob([stlString], { type: 'application/octet-stream' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `drawer-organizer-${state.drawerWidth}x${state.drawerDepth}x${state.drawerHeight}.stl`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                } catch (error) {
+                    console.error('STL Export Error:', error);
+                    alert('Error exporting STL: ' + error.message);
+                }
+                
+                document.getElementById('loading').classList.remove('active');
+            }, 100);
+        }
+
+        function closeTutorial() {
+            document.getElementById('tutorial').style.display = 'none';
+            localStorage.setItem('tutorialClosed', 'true');
+        }
+
+        // Check if tutorial was already closed
+        if (localStorage.getItem('tutorialClosed')) {
+            document.getElementById('tutorial').style.display = 'none';
+        }
+
+        // Input event listeners
+        document.getElementById('drawer-width').addEventListener('input', (e) => {
+            state.drawerWidth = parseFloat(e.target.value);
+            updateThreeJSModel();
+            updateStats();
+        });
+
+        document.getElementById('drawer-depth').addEventListener('input', (e) => {
+            state.drawerDepth = parseFloat(e.target.value);
+            updateThreeJSModel();
+            updateStats();
+        });
+
+        document.getElementById('drawer-height').addEventListener('input', (e) => {
+            state.drawerHeight = parseFloat(e.target.value);
+            updateThreeJSModel();
+            updateStats();
+        });
+
+        document.getElementById('wall-thickness').addEventListener('input', (e) => {
+            state.wallThickness = parseFloat(e.target.value);
+            updateThreeJSModel();
+            updateStats();
+        });
+
+        // Initialize
+        initThreeJS();
+        drawGrid();
+        updateThreeJSModel();
+        updateStats();
+    </script>
+</body>
+</html>
